@@ -1,0 +1,84 @@
+#include "imports/stdlib.fc";
+#include "imports/utils.fc";
+
+(slice, int) dict_get?(cell dict, int key_len, slice index) asm(index dict key_len) "DICTGET" "NULLSWAPIFNOT";
+
+global slice storage::admin;
+global cell storage::dict;
+
+() load_data() impure inline {
+    slice ds = get_data().begin_parse();
+    storage::admin = ds~load_msg_addr();
+    storage::dict = ds~load_dict();
+}
+
+() save_data() impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(storage::admin)
+            .store_dict(storage::dict)
+        .end_cell()
+    );
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+
+    slice cs = in_msg_full.begin_parse();
+
+    int flags = cs~load_uint(4);
+
+    if (flags & 1) {
+        return ();
+    }
+
+    slice sender = cs~load_msg_addr();
+    cs~load_msg_addr();
+    cs~load_coins();
+    cs~skip_bits(1);
+    cs~load_coins();
+
+    int fwd_fee = cs~load_coins();
+
+    int op = in_msg_body~load_uint(32);
+
+    load_data();
+
+    throw_unless(101, equal_slices(sender, storage::admin));
+
+    if (op == 1) { 
+        slice to_address = in_msg_body~load_msg_addr();
+
+        (slice value, int found?) = storage::dict.dict_get?(267, to_address);
+
+        if (found?) {
+            int send_amount = value~load_coins();
+
+            throw_unless(102, my_balance > (send_amount + fwd_fee));
+
+            messages::send_empty(send_amount, to_address, 1 + 2);
+        }
+        return ();
+    }
+    
+    if (op == 2) {
+        slice to = in_msg_body~load_msg_addr();
+        int send_amount = in_msg_body~load_coins();
+
+        storage::dict~dict_set(267, to, begin_cell().store_coins(send_amount).end_cell().begin_parse());
+
+        save_data();
+
+        return ();
+    }
+
+    throw(0xffff);
+}
+
+int get_value_by_address(slice address) method_id {
+    load_data();
+    (slice value, _) = storage::dict.dict_get?(267, address);
+    return value~load_coins();
+}
